@@ -1,0 +1,205 @@
+"""Device connection owner: libdyson MQTT client, reconnect loop, polling, command apply.
+
+libdyson is paho-callback based (its own network thread); every callback is
+hopped onto the asyncio loop via call_soon_threadsafe, and every blocking
+libdyson call leaves the loop via asyncio.to_thread.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import time
+from typing import Any
+
+from libdyson import MessageType, get_device
+from libdyson.dyson_device import DysonFanDevice
+
+from .config import Settings
+from .metrics import Metrics
+from .normalize import normalize_environment, normalize_state
+from .publisher import Publisher
+
+logger = logging.getLogger(__name__)
+
+_RECONNECT_BACKOFF_START_SECONDS = 5.0
+_RECONNECT_BACKOFF_MAX_SECONDS = 300.0
+
+# Bounded hop queue from the paho thread to the asyncio loop; the device
+# emits at most a handful of messages per second.
+_MESSAGE_QUEUE_MAX = 100
+
+COMMAND_FUNCTIONS = ("power", "speed", "oscillation", "night")
+
+
+class DysonBridge:
+    """Owns the device connection and publishes normalized state to NATS."""
+
+    def __init__(self, settings: Settings, publisher: Publisher, metrics: Metrics) -> None:
+        self._settings = settings
+        self._publisher = publisher
+        self._metrics = metrics
+        self._device: DysonFanDevice = self._build_device()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._queue: asyncio.Queue[MessageType] = asyncio.Queue(maxsize=_MESSAGE_QUEUE_MAX)
+        self._supervisor_task: asyncio.Task[None] | None = None
+        self._pump_task: asyncio.Task[None] | None = None
+        self._stopping = False
+
+    def _build_device(self) -> DysonFanDevice:
+        device = get_device(
+            self._settings.dyson_serial,
+            self._settings.read_dyson_credential(),
+            self._settings.dyson_product_type,
+        )
+        if device is None:
+            raise RuntimeError(
+                f"unknown DYSON_PRODUCT_TYPE {self._settings.dyson_product_type!r}"
+            )
+        if not isinstance(device, DysonFanDevice):
+            raise RuntimeError(
+                f"DYSON_PRODUCT_TYPE {self._settings.dyson_product_type!r} is not a fan device"
+            )
+        return device
+
+    @property
+    def is_connected(self) -> bool:
+        return bool(self._device.is_connected)
+
+    async def start(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        self._device.add_message_listener(self._on_message)
+        self._pump_task = asyncio.create_task(self._pump())
+        self._supervisor_task = asyncio.create_task(self._supervise())
+
+    async def stop(self) -> None:
+        self._stopping = True
+        for task in (self._supervisor_task, self._pump_task):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        self._supervisor_task = None
+        self._pump_task = None
+        if self._device.is_connected:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(self._device.disconnect)
+        self._metrics.dyson_connected.set(0)
+
+    # --- device -> NATS -------------------------------------------------
+
+    def _on_message(self, message_type: MessageType) -> None:
+        """libdyson callback; runs on the paho thread."""
+        if self._loop is None or self._loop.is_closed():
+            return
+        self._loop.call_soon_threadsafe(self._enqueue_message, message_type)
+
+    def _enqueue_message(self, message_type: MessageType) -> None:
+        try:
+            self._queue.put_nowait(message_type)
+        except asyncio.QueueFull:
+            logger.warning("device message queue full, dropping %s", message_type)
+
+    async def _pump(self) -> None:
+        while True:
+            message_type = await self._queue.get()
+            try:
+                self._metrics.last_message_ts.set(time.time())
+                if message_type is MessageType.STATE:
+                    self._metrics.messages_received.labels(kind="state").inc()
+                    payload = normalize_state(self._device)
+                    if payload:
+                        self._publisher.enqueue("state", self._settings.state_subject, payload)
+                elif message_type is MessageType.ENVIRONMENTAL:
+                    self._metrics.messages_received.labels(kind="environment").inc()
+                    payload = normalize_environment(self._device)
+                    if payload:
+                        self._publisher.enqueue(
+                            "environment", self._settings.environment_subject, payload
+                        )
+            except Exception:
+                logger.exception("error handling device message %s", message_type)
+
+    # --- connection & polling -------------------------------------------
+
+    async def _supervise(self) -> None:
+        """Single loop owning connect, reconnect-with-backoff, and periodic polls."""
+        backoff = _RECONNECT_BACKOFF_START_SECONDS
+        while not self._stopping:
+            if not self._device.is_connected:
+                self._metrics.dyson_connected.set(0)
+                try:
+                    await asyncio.to_thread(self._device.connect, self._settings.dyson_host)
+                except Exception as exc:
+                    self._metrics.reconnects.labels(outcome="error").inc()
+                    logger.warning(
+                        "device connect to %s failed, retrying in %.0fs: %s",
+                        self._settings.dyson_host,
+                        backoff,
+                        exc,
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, _RECONNECT_BACKOFF_MAX_SECONDS)
+                    continue
+                self._metrics.reconnects.labels(outcome="ok").inc()
+                self._metrics.dyson_connected.set(1)
+                backoff = _RECONNECT_BACKOFF_START_SECONDS
+                logger.info("device connected: %s", self._settings.dyson_host)
+                await self._after_connect()
+
+            await asyncio.sleep(self._settings.poll_interval)
+            await self._poll()
+
+    async def _after_connect(self) -> None:
+        if self._settings.ensure_monitoring:
+            try:
+                await asyncio.to_thread(self._device.enable_continuous_monitoring)
+            except Exception:
+                logger.exception("enabling continuous monitoring failed")
+        await self._poll()
+
+    async def _poll(self) -> None:
+        if not self._device.is_connected:
+            return
+        try:
+            await asyncio.to_thread(self._device.request_current_status)
+            await asyncio.to_thread(self._device.request_environmental_data)
+        except Exception as exc:
+            self._metrics.poll_errors.inc()
+            logger.warning("device poll failed: %s", exc)
+
+    # --- NATS -> device ---------------------------------------------------
+
+    def apply_command(self, function: str, value: Any) -> None:
+        """Translate one validated command into libdyson calls (blocking; call via to_thread).
+
+        The device answers with a STATE-CHANGE push, which closes the status
+        loop back to NATS/KNX — no optimistic state is published here.
+        """
+        device = self._device
+        if function == "power":
+            if value:
+                device.turn_on()
+            else:
+                device.turn_off()
+        elif function == "speed":
+            if value == 0:
+                # GA semantics: Stufe 0 = Automatik (implies power on).
+                device.turn_on()
+                device.enable_auto_mode()
+            else:
+                device.disable_auto_mode()
+                device.set_speed(int(value))
+        elif function == "oscillation":
+            if value:
+                device.enable_oscillation()
+            else:
+                device.disable_oscillation()
+        elif function == "night":
+            if value:
+                device.enable_night_mode()
+            else:
+                device.disable_night_mode()
+        else:
+            raise ValueError(f"unknown command function {function!r}")
