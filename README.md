@@ -9,8 +9,8 @@ Commands flow the other way on core NATS subjects.
 ```
 Dyson fan (MQTT broker on device, :1883)
   ↕ dyson-nats-bridge
-    → dyson.<device>.state        {"power": true, "speed": 4, "auto": false, ...}
-    → dyson.<device>.environment  {"temperature_c": 21.5, "humidity": 52, "pm25": 3, ...}
+    → dyson.<device>.state        {"power": true, "speed": 4, "oscillation_mode": 3, ...}
+    → dyson.<device>.environment  {"pm25": 3, "pm10": 5, ...}
     ← dyson.<device>.command.{power,speed,oscillation,night}  {"value": ...}
 ```
 
@@ -20,6 +20,12 @@ Design notes:
   knx-nats-bridge writer rules) only see named scalars: `ON`/`OFF` become
   booleans, fan speed `AUTO` becomes `speed: 0` (0 = auto, 1-10 = manual),
   Kelvin becomes °C, and sleeping/failed sensors drop their field.
+- Oscillation is a mode enum mirroring the app's angle presets:
+  `oscillation_mode` 0 = off, 1/2/3/4 = 45/90/180/350 degrees (the device's
+  numeric `ancp` width on newer models). The `.command.oscillation` value
+  uses the same enum; booleans still work (true = on with the last angle).
+- Environment carries whatever the device's sensors report — entry-level
+  models (e.g. PC1) only have the particulate sensor (`pm25`/`pm10`).
 - State is event-driven (the device pushes `STATE-CHANGE`) plus a periodic
   poll (`POLL_INTERVAL`, default 60 s) that also refreshes sensor data.
 - `/healthz` covers NATS and the logging pipeline only; an unreachable fan

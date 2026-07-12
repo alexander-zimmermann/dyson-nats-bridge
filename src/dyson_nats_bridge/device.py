@@ -18,7 +18,12 @@ from libdyson.dyson_device import DysonFanDevice
 
 from .config import Settings
 from .metrics import Metrics
-from .normalize import normalize_environment, normalize_state
+from .normalize import (
+    OSCILLATION_PRESETS,
+    normalize_environment,
+    normalize_state,
+    oscillation_mode,
+)
 from .publisher import Publisher
 
 logger = logging.getLogger(__name__)
@@ -109,6 +114,9 @@ class DysonBridge:
                 if message_type is MessageType.STATE:
                     self._metrics.messages_received.labels(kind="state").inc()
                     payload = normalize_state(self._device)
+                    mode = oscillation_mode(self._raw_status("oson"), self._raw_status("ancp"))
+                    if mode is not None:
+                        payload["oscillation_mode"] = mode
                     if payload:
                         self._publisher.enqueue("state", self._settings.state_subject, payload)
                 elif message_type is MessageType.ENVIRONMENTAL:
@@ -120,6 +128,14 @@ class DysonBridge:
                         )
             except Exception:
                 logger.exception("error handling device message %s", message_type)
+
+    def _raw_status(self, field: str) -> str | None:
+        """Read one raw status field; handles STATE-CHANGE [old, new] pairs."""
+        try:
+            value = self._device._get_field_value(self._device._status, field)
+        except Exception:
+            return None
+        return value if isinstance(value, str) else None
 
     # --- connection & polling -------------------------------------------
 
@@ -192,10 +208,16 @@ class DysonBridge:
                 device.disable_auto_mode()
                 device.set_speed(int(value))
         elif function == "oscillation":
-            if value:
-                device.enable_oscillation()
-            else:
+            # libdyson's enable_oscillation() writes the TP04 dialect
+            # (ancp CUST + osal/osau); newer devices (438M) take the app's
+            # angle presets as a numeric ancp width instead.
+            if value is True:
+                device._set_configuration(oson="ON", fpwr="ON")
+            elif value is False or value == 0:
                 device.disable_oscillation()
+            else:
+                angle = OSCILLATION_PRESETS[int(value)]
+                device._set_configuration(oson="ON", fpwr="ON", ancp=f"{angle:04d}")
         elif function == "night":
             if value:
                 device.enable_night_mode()

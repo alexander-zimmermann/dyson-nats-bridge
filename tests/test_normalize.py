@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from dyson_nats_bridge.normalize import normalize_environment, normalize_state
+from dyson_nats_bridge.normalize import normalize_environment, normalize_state, oscillation_mode
 
 
 class FakeDevice:
@@ -61,6 +61,20 @@ def test_state_speed_none_without_auto_is_omitted() -> None:
         is_on=False, auto_mode=False, speed=None, oscillation=False, night_mode=False
     )
     assert "speed" not in normalize_state(device)
+
+
+def test_oscillation_mode_mapping() -> None:
+    # 438M reports the app's angle presets as a numeric ancp width.
+    assert oscillation_mode("OFF", "0045") == 0
+    assert oscillation_mode("OIOF", None) == 0
+    assert oscillation_mode("ON", "0045") == 1
+    assert oscillation_mode("ON", "0090") == 2
+    assert oscillation_mode("OION", "0180") == 3
+    assert oscillation_mode("ON", "0350") == 4
+    # Unknown combinations are omitted rather than guessed.
+    assert oscillation_mode("ON", "CUST") is None
+    assert oscillation_mode("ON", "0123") is None
+    assert oscillation_mode(None, "0045") is None
 
 
 def test_environment_kelvin_to_celsius() -> None:

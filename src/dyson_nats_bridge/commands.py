@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _SPEED_MIN = 0  # 0 = auto mode (GA semantics), 1..10 = manual
 _SPEED_MAX = 10
+_OSCILLATION_MODE_MAX = 4  # 0 = off, 1..4 = 45/90/180/350 degrees
 
 
 def parse_command(subject: str, data: bytes) -> tuple[str, Any]:
@@ -35,13 +36,24 @@ def parse_command(subject: str, data: bytes) -> tuple[str, Any]:
     value = payload["value"]
 
     if function == "speed":
-        # Accept bools rejected: True would silently become speed 1.
+        # Bools rejected: True would silently become speed 1.
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise ValueError(f"speed must be a number, got {value!r}")
         value = int(value)
         if not _SPEED_MIN <= value <= _SPEED_MAX:
             raise ValueError(f"speed must be {_SPEED_MIN}..{_SPEED_MAX}, got {value}")
         return function, value
+
+    if function == "oscillation":
+        # Mode enum from the GA (0 = off, 1..4 = angle preset); booleans keep
+        # working for manual testing (true = on with the last angle).
+        if isinstance(value, bool):
+            return function, value
+        if isinstance(value, int | float) and 0 <= int(value) <= _OSCILLATION_MODE_MAX:
+            return function, int(value)
+        raise ValueError(
+            f"oscillation must be 0..{_OSCILLATION_MODE_MAX} or a boolean, got {value!r}"
+        )
 
     # Remaining functions are switches; accept bool or 0/1 (DPT 1.001 decodes to bool,
     # but tolerate numeric writes from manual `nats pub` testing).

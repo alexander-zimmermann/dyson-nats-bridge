@@ -19,7 +19,15 @@ def _payload(value: Any) -> bytes:
 def test_parse_switch_bool_and_numeric() -> None:
     assert parse_command("dyson.x.command.power", _payload(True)) == ("power", True)
     assert parse_command("dyson.x.command.night", _payload(0)) == ("night", False)
-    assert parse_command("dyson.x.command.oscillation", _payload(1)) == ("oscillation", True)
+
+
+def test_parse_oscillation_mode_enum() -> None:
+    # 0 = off, 1..4 = 45/90/180/350 degrees; bools = on (last angle) / off.
+    assert parse_command("dyson.x.command.oscillation", _payload(0)) == ("oscillation", 0)
+    assert parse_command("dyson.x.command.oscillation", _payload(4)) == ("oscillation", 4)
+    assert parse_command("dyson.x.command.oscillation", _payload(True)) == ("oscillation", True)
+    with pytest.raises(ValueError, match="oscillation must be"):
+        parse_command("dyson.x.command.oscillation", _payload(5))
 
 
 def test_parse_speed_range() -> None:

@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 # (ENVIRONMENTAL_OFF=-1, ENVIRONMENTAL_INIT=-2, ENVIRONMENTAL_FAIL=-3).
 _KELVIN_OFFSET = 273.15
 
+# Oscillation mode enum shared with the KNX GA (DPT 5.010): 0 = off,
+# 1..4 = the device's ancp width presets in degrees.
+OSCILLATION_PRESETS = {1: 45, 2: 90, 3: 180, 4: 350}
+_ANGLE_TO_MODE = {angle: mode for mode, angle in OSCILLATION_PRESETS.items()}
+
 
 class FanState(Protocol):
     """The subset of libdyson's DysonPureCool surface we read."""
@@ -80,6 +85,23 @@ def normalize_state(device: FanState) -> dict[str, Any]:
         if speed is not None:
             state["speed"] = int(speed)
     return state
+
+
+def oscillation_mode(oson: str | None, ancp: str | None) -> int | None:
+    """Map raw oson/ancp to the mode enum (0=off, 1..4=45/90/180/350 degrees).
+
+    Newer devices (438M) report the app's angle presets as a numeric ancp
+    width; None is returned for unknown combinations (e.g. ancp CUST) so the
+    field is omitted and downstream keeps the last known mode.
+    """
+    if oson in ("OFF", "OIOF"):
+        return 0
+    if oson in ("ON", "OION") and ancp is not None:
+        try:
+            return _ANGLE_TO_MODE.get(int(ancp))
+        except ValueError:
+            return None
+    return None
 
 
 def normalize_environment(device: FanState) -> dict[str, Any]:
