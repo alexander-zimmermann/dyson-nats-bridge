@@ -1,6 +1,6 @@
 [project]
 name = "dyson-nats-bridge"
-version = "0.2.0"
+version = "0.3.0"
 description = "Bridge a Dyson purifier fan (on-device MQTT broker) to NATS JetStream"
 readme = "README.md"
 license = "GPL-2.0-or-later"
