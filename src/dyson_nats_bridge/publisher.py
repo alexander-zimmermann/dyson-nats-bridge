@@ -92,6 +92,27 @@ class Publisher:
                 exc,
             )
 
+    async def last_message(self, subject: str) -> dict[str, Any] | None:
+        """Last archived message on `subject`, or None when there is none.
+
+        Used to restore state that only ever arrives over NATS (the lock flag),
+        so a pod restart doesn't silently drop it.
+        """
+        if self._js is None:
+            return None
+        try:
+            msg = await self._js.get_last_msg(self._settings.nats_stream_name, subject)
+        except Exception as exc:
+            logger.info("no archived message for %s: %s", subject, exc)
+            return None
+
+        try:
+            payload = json.loads(msg.data or b"")
+        except json.JSONDecodeError:
+            logger.warning("archived message on %s is not valid JSON", subject)
+            return None
+        return payload if isinstance(payload, dict) else None
+
     async def subscribe_core(
         self, subject: str, callback: Callable[[Msg], Awaitable[None]]
     ) -> None:

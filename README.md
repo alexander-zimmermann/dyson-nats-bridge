@@ -11,7 +11,7 @@ Dyson fans (MQTT broker on device, :1883)
   ↕ dyson-nats-bridge                      # one process, N devices
     → dyson.<device>.state        {"power": true, "speed": 4, "oscillation_mode": 3, ...}
     → dyson.<device>.environment  {"pm25": 3, "pm10": 5, ...}
-    ← dyson.<device>.command.{power,speed,oscillation,night}  {"value": ...}
+    ← dyson.<device>.command.{power,speed,oscillation,night,lock}  {"value": ...}
 ```
 
 Design notes:
@@ -31,6 +31,13 @@ Design notes:
   uses the same enum; booleans still work (true = on with the last angle).
 - Environment carries whatever the device's sensors report — entry-level
   models (e.g. PC1) only have the particulate sensor (`pm25`/`pm10`).
+- `command.lock` is not a device capability; the fan has no such concept. It is
+  a bridge-side flag (`true` = locked) that makes the other four commands
+  no-ops, so a KNX/Basalte lock can hold a device at its current setting.
+  Unlocking always gets through, a swallowed command produces no status write
+  (`state.locked` reflects the lock itself, not each command it swallows), and
+  the flag is restored from the last archived state message on startup so a
+  restart cannot silently unlock a device.
 - State is event-driven (the device pushes `STATE-CHANGE`) plus a periodic
   poll (`POLL_INTERVAL`, default 60 s) that also refreshes sensor data.
 - `/healthz` covers NATS and the logging pipeline only; an unreachable fan

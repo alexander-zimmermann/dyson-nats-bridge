@@ -119,6 +119,21 @@ class CommandHandler:
             logger.warning("command for unknown device %r on %s", device, msg.subject)
             return
 
+        if function == "lock":
+            # Bridge-side flag, no device I/O — stays on the event loop so the
+            # immediate state publish is safe.
+            bridge.set_lock(bool(value))
+            self._count(device, function, "ok")
+            logger.info("[%s] lock %s", device, "set" if value else "cleared")
+            return
+
+        if bridge.locked:
+            # Counted, but deliberately no status write: the status GA reflects
+            # the lock itself, not each command it swallows.
+            self._count(device, function, "locked")
+            logger.info("[%s] command %s=%r ignored: device locked", device, function, value)
+            return
+
         try:
             await asyncio.to_thread(bridge.apply_command, function, value)
         except Exception as exc:
