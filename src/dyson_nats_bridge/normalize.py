@@ -38,6 +38,10 @@ class FanState(Protocol):
     @property
     def night_mode(self) -> bool: ...
     @property
+    def fan_state(self) -> bool: ...
+    @property
+    def hepa_filter_life(self) -> int | None: ...
+    @property
     def temperature(self) -> float: ...
     @property
     def humidity(self) -> int: ...
@@ -66,13 +70,19 @@ def _read(device: FanState, attr: str) -> Any:
 
 
 def normalize_state(device: FanState) -> dict[str, Any]:
-    """Flat control-state payload; `speed` 0 encodes auto mode."""
+    """Flat control-state payload; `speed` 0 encodes auto mode.
+
+    `power` is the commanded state (`fpwr`), `fan_running` whether the fan is
+    actually turning (`fnst`) — in auto mode with clean air the device is on
+    while the fan idles, and only the latter shows that.
+    """
     state: dict[str, Any] = {}
     for key, attr in (
         ("power", "is_on"),
         ("auto", "auto_mode"),
         ("oscillation", "oscillation"),
         ("night", "night_mode"),
+        ("fan_running", "fan_state"),
     ):
         value = _read(device, attr)
         if value is not None:
@@ -84,6 +94,13 @@ def normalize_state(device: FanState) -> dict[str, Any]:
         speed = _read(device, "speed")
         if speed is not None:
             state["speed"] = int(speed)
+
+    # Percent remaining. Models with a separate carbon filter report `cflr`
+    # too; this one runs a combined filter (cflt NONE) so only HEPA applies.
+    # A device that reports INV raises inside libdyson and drops the field.
+    filter_life = _read(device, "hepa_filter_life")
+    if filter_life is not None:
+        state["filter_life"] = int(filter_life)
     return state
 
 
