@@ -35,6 +35,14 @@ class Metrics:
             "1 if NATS client is currently connected, 0 otherwise",
             registry=self.registry,
         )
+        # Exposed for alerting: the filter has to be replaced before it runs
+        # out, and nothing else in the stack watches a slow-moving value.
+        self.filter_life = Gauge(
+            "dyson_filter_life_percent",
+            "Remaining HEPA filter life in percent",
+            ["device"],
+            registry=self.registry,
+        )
         self.messages_received = Counter(
             "dyson_messages_received_total",
             "Messages received from the device by kind (state | environment)",
