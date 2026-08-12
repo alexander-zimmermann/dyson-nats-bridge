@@ -56,6 +56,39 @@ def test_state_missing_fields_are_omitted() -> None:
     assert state == {"power": True, "auto": False, "night": False}
 
 
+def test_state_fan_running_and_filter_life() -> None:
+    # fpwr ON while fnst OFF: the device is on but the fan idles (auto, clean air).
+    device = FakeDevice(
+        is_on=True,
+        auto_mode=True,
+        speed=None,
+        oscillation=False,
+        night_mode=False,
+        fan_state=False,
+        hepa_filter_life=96,
+    )
+    state = normalize_state(device)
+    assert state["power"] is True
+    assert state["fan_running"] is False
+    assert state["filter_life"] == 96
+
+
+def test_state_invalid_filter_life_is_omitted() -> None:
+    # Models without the filter report INV; libdyson raises on int("INV").
+    device = FakeDevice(
+        is_on=True,
+        auto_mode=False,
+        speed=1,
+        oscillation=False,
+        night_mode=False,
+        fan_state=True,
+        hepa_filter_life=ValueError("invalid literal for int(): 'INV'"),
+    )
+    state = normalize_state(device)
+    assert "filter_life" not in state
+    assert state["fan_running"] is True
+
+
 def test_state_speed_none_without_auto_is_omitted() -> None:
     device = FakeDevice(
         is_on=False, auto_mode=False, speed=None, oscillation=False, night_mode=False

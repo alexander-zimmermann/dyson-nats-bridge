@@ -9,7 +9,8 @@ Commands flow the other way on core NATS subjects.
 ```
 Dyson fans (MQTT broker on device, :1883)
   ↕ dyson-nats-bridge                      # one process, N devices
-    → dyson.<device>.state        {"power": true, "speed": 4, "oscillation_mode": 3, ...}
+    → dyson.<device>.state        {"power": true, "speed": 4, "oscillation_mode": 3,
+                                   "fan_running": true, "filter_life": 96, ...}
     → dyson.<device>.environment  {"pm25": 3, "pm10": 5, ...}
     ← dyson.<device>.command.{power,speed,oscillation,night,lock}  {"value": ...}
 ```
@@ -31,6 +32,12 @@ Design notes:
   uses the same enum; booleans still work (true = on with the last angle).
 - Environment carries whatever the device's sensors report — entry-level
   models (e.g. PC1) only have the particulate sensor (`pm25`/`pm10`).
+- `power` is the commanded state (`fpwr`), `fan_running` whether the fan is
+  actually turning (`fnst`). They differ in auto mode: with clean air the
+  device stays on while the fan idles.
+- `filter_life` is the HEPA filter's remaining life in percent (`hflr`).
+  Models with a separate carbon filter also report `cflr`; a combined-filter
+  device reports `INV` there, and the field is then simply absent.
 - `command.lock` is not a device capability; the fan has no such concept. It is
   a bridge-side flag (`true` = locked) that makes the other four commands
   no-ops, so a KNX/Basalte lock can hold a device at its current setting.
