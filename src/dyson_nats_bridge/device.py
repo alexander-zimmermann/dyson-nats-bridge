@@ -16,7 +16,7 @@ from typing import Any
 from libdyson import MessageType, get_device
 from libdyson.dyson_device import DysonFanDevice
 
-from .config import Settings
+from .config import DeviceConfig, Settings
 from .metrics import Metrics
 from .normalize import (
     OSCILLATION_PRESETS,
@@ -39,10 +39,18 @@ COMMAND_FUNCTIONS = ("power", "speed", "oscillation", "night")
 
 
 class DysonBridge:
-    """Owns the device connection and publishes normalized state to NATS."""
+    """Owns one device's connection and publishes its normalized state to NATS."""
 
-    def __init__(self, settings: Settings, publisher: Publisher, metrics: Metrics) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        config: DeviceConfig,
+        publisher: Publisher,
+        metrics: Metrics,
+    ) -> None:
         self._settings = settings
+        self._config = config
+        self._name = config.name
         self._publisher = publisher
         self._metrics = metrics
         self._device: DysonFanDevice = self._build_device()
@@ -54,19 +62,24 @@ class DysonBridge:
 
     def _build_device(self) -> DysonFanDevice:
         device = get_device(
-            self._settings.dyson_serial,
-            self._settings.read_dyson_credential(),
-            self._settings.dyson_product_type,
+            self._config.serial,
+            self._settings.read_device_credential(self._config.name),
+            self._config.product_type,
         )
         if device is None:
             raise RuntimeError(
-                f"unknown DYSON_PRODUCT_TYPE {self._settings.dyson_product_type!r}"
+                f"device {self._config.name!r}: unknown product_type {self._config.product_type!r}"
             )
         if not isinstance(device, DysonFanDevice):
             raise RuntimeError(
-                f"DYSON_PRODUCT_TYPE {self._settings.dyson_product_type!r} is not a fan device"
+                f"device {self._config.name!r}: product_type "
+                f"{self._config.product_type!r} is not a fan device"
             )
         return device
+
+    @property
+    def name(self) -> str:
+        return self._config.name
 
     @property
     def is_connected(self) -> bool:
@@ -90,7 +103,7 @@ class DysonBridge:
         if self._device.is_connected:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(self._device.disconnect)
-        self._metrics.dyson_connected.set(0)
+        self._metrics.dyson_connected.labels(device=self._name).set(0)
 
     # --- device -> NATS -------------------------------------------------
 
@@ -104,30 +117,30 @@ class DysonBridge:
         try:
             self._queue.put_nowait(message_type)
         except asyncio.QueueFull:
-            logger.warning("device message queue full, dropping %s", message_type)
+            logger.warning("[%s] device message queue full, dropping %s", self._name, message_type)
 
     async def _pump(self) -> None:
         while True:
             message_type = await self._queue.get()
             try:
-                self._metrics.last_message_ts.set(time.time())
+                self._metrics.last_message_ts.labels(device=self._name).set(time.time())
                 if message_type is MessageType.STATE:
-                    self._metrics.messages_received.labels(kind="state").inc()
+                    kind, subject = "state", self._config.state_subject
                     payload = normalize_state(self._device)
                     mode = oscillation_mode(self._raw_status("oson"), self._raw_status("ancp"))
                     if mode is not None:
                         payload["oscillation_mode"] = mode
-                    if payload:
-                        self._publisher.enqueue("state", self._settings.state_subject, payload)
                 elif message_type is MessageType.ENVIRONMENTAL:
-                    self._metrics.messages_received.labels(kind="environment").inc()
+                    kind, subject = "environment", self._config.environment_subject
                     payload = normalize_environment(self._device)
-                    if payload:
-                        self._publisher.enqueue(
-                            "environment", self._settings.environment_subject, payload
-                        )
+                else:
+                    continue
+
+                self._metrics.messages_received.labels(device=self._name, kind=kind).inc()
+                if payload:
+                    self._publisher.enqueue(self._name, kind, subject, payload)
             except Exception:
-                logger.exception("error handling device message %s", message_type)
+                logger.exception("[%s] error handling device message %s", self._name, message_type)
 
     def _raw_status(self, field: str) -> str | None:
         """Read one raw status field; handles STATE-CHANGE [old, new] pairs."""
@@ -144,24 +157,25 @@ class DysonBridge:
         backoff = _RECONNECT_BACKOFF_START_SECONDS
         while not self._stopping:
             if not self._device.is_connected:
-                self._metrics.dyson_connected.set(0)
+                self._metrics.dyson_connected.labels(device=self._name).set(0)
                 try:
-                    await asyncio.to_thread(self._device.connect, self._settings.dyson_host)
+                    await asyncio.to_thread(self._device.connect, self._config.host)
                 except Exception as exc:
-                    self._metrics.reconnects.labels(outcome="error").inc()
+                    self._metrics.reconnects.labels(device=self._name, outcome="error").inc()
                     logger.warning(
-                        "device connect to %s failed, retrying in %.0fs: %s",
-                        self._settings.dyson_host,
+                        "[%s] connect to %s failed, retrying in %.0fs: %s",
+                        self._name,
+                        self._config.host,
                         backoff,
                         exc,
                     )
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, _RECONNECT_BACKOFF_MAX_SECONDS)
                     continue
-                self._metrics.reconnects.labels(outcome="ok").inc()
-                self._metrics.dyson_connected.set(1)
+                self._metrics.reconnects.labels(device=self._name, outcome="ok").inc()
+                self._metrics.dyson_connected.labels(device=self._name).set(1)
                 backoff = _RECONNECT_BACKOFF_START_SECONDS
-                logger.info("device connected: %s", self._settings.dyson_host)
+                logger.info("[%s] connected: %s", self._name, self._config.host)
                 await self._after_connect()
 
             await asyncio.sleep(self._settings.poll_interval)
@@ -172,7 +186,7 @@ class DysonBridge:
             try:
                 await asyncio.to_thread(self._device.enable_continuous_monitoring)
             except Exception:
-                logger.exception("enabling continuous monitoring failed")
+                logger.exception("[%s] enabling continuous monitoring failed", self._name)
         await self._poll()
 
     async def _poll(self) -> None:
@@ -182,8 +196,8 @@ class DysonBridge:
             await asyncio.to_thread(self._device.request_current_status)
             await asyncio.to_thread(self._device.request_environmental_data)
         except Exception as exc:
-            self._metrics.poll_errors.inc()
-            logger.warning("device poll failed: %s", exc)
+            self._metrics.poll_errors.labels(device=self._name).inc()
+            logger.warning("[%s] poll failed: %s", self._name, exc)
 
     # --- NATS -> device ---------------------------------------------------
 

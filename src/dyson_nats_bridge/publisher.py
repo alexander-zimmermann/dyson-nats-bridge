@@ -30,11 +30,11 @@ _CLOSE_FLUSH_TIMEOUT_SECONDS = 5.0
 
 
 class Publisher:
-    """Single NATS client shared by the state publisher and the command subscriber.
+    """Single NATS client shared by every device bridge and the command subscriber.
 
     Messages enter through the synchronous enqueue() (callable via
     call_soon_threadsafe from libdyson's paho thread); a single worker task
-    drains the queue, so messages are published in device order.
+    drains the queue, so messages are published in arrival order.
     """
 
     def __init__(self, settings: Settings, metrics: Metrics) -> None:
@@ -42,7 +42,7 @@ class Publisher:
         self._metrics = metrics
         self._nc: NatsClient | None = None
         self._js: JetStreamContext | None = None
-        self._queue: asyncio.Queue[tuple[str, str, dict[str, Any]]] = asyncio.Queue(
+        self._queue: asyncio.Queue[tuple[str, str, str, dict[str, Any]]] = asyncio.Queue(
             maxsize=_PUBLISH_QUEUE_MAX
         )
         self._worker: asyncio.Task[None] | None = None
@@ -118,16 +118,16 @@ class Publisher:
     def is_connected(self) -> bool:
         return bool(self._nc and self._nc.is_connected)
 
-    def enqueue(self, kind: str, subject: str, payload: dict[str, Any]) -> bool:
+    def enqueue(self, device: str, kind: str, subject: str, payload: dict[str, Any]) -> bool:
         """Queue one message for publishing; safe to call from the event loop only.
 
         Returns False (and counts a queue_full error) when the buffer is full,
         e.g. during a prolonged NATS outage.
         """
         try:
-            self._queue.put_nowait((kind, subject, payload))
+            self._queue.put_nowait((device, kind, subject, payload))
         except asyncio.QueueFull:
-            self._metrics.publish_errors.labels(reason="queue_full").inc()
+            self._metrics.publish_errors.labels(device=device, reason="queue_full").inc()
             logger.warning(
                 "publish queue full (%d), dropping message for %s", self._queue.maxsize, subject
             )
@@ -136,15 +136,15 @@ class Publisher:
 
     async def _drain_queue(self) -> None:
         while True:
-            kind, subject, payload = await self._queue.get()
+            device, kind, subject, payload = await self._queue.get()
             try:
-                await self.publish(kind, subject, payload)
+                await self.publish(device, kind, subject, payload)
             except Exception:
                 logger.exception("unexpected error publishing %s", subject)
             finally:
                 self._queue.task_done()
 
-    async def publish(self, kind: str, subject: str, payload: dict[str, Any]) -> bool:
+    async def publish(self, device: str, kind: str, subject: str, payload: dict[str, Any]) -> bool:
         """Publish one message, waiting for a JetStream ack.
 
         Returns True on success, False on a permanent failure after retries.
@@ -154,29 +154,29 @@ class Publisher:
         backoff = 0.1
         for attempt in range(1, 4):
             if not self._js:
-                self._metrics.publish_errors.labels(reason="other").inc()
+                self._metrics.publish_errors.labels(device=device, reason="other").inc()
                 return False
             try:
                 await self._js.publish(subject, body, timeout=5.0)
-                self._metrics.messages_published.labels(kind=kind).inc()
+                self._metrics.messages_published.labels(device=device, kind=kind).inc()
                 return True
             except NoStreamResponseError:
                 # Stream/subject misconfiguration: retrying won't help, and any
                 # sleep here would stall the ordered publish queue.
-                self._metrics.publish_errors.labels(reason="no_stream").inc()
+                self._metrics.publish_errors.labels(device=device, reason="no_stream").inc()
                 logger.error("no stream matches subject %s (attempt %d)", subject, attempt)
                 return False
             except NATSTimeoutError:
-                self._metrics.publish_errors.labels(reason="timeout").inc()
+                self._metrics.publish_errors.labels(device=device, reason="timeout").inc()
                 logger.warning("publish timeout for %s (attempt %d)", subject, attempt)
             except NoRespondersError:
-                self._metrics.publish_errors.labels(reason="nak").inc()
+                self._metrics.publish_errors.labels(device=device, reason="nak").inc()
                 logger.warning("no responders for %s (attempt %d)", subject, attempt)
             except APIError as exc:
-                self._metrics.publish_errors.labels(reason="nak").inc()
+                self._metrics.publish_errors.labels(device=device, reason="nak").inc()
                 logger.warning("jetstream api error for %s (attempt %d): %s", subject, attempt, exc)
             except Exception:
-                self._metrics.publish_errors.labels(reason="other").inc()
+                self._metrics.publish_errors.labels(device=device, reason="other").inc()
                 logger.exception("unexpected publish error for %s (attempt %d)", subject, attempt)
 
             if attempt < 3:

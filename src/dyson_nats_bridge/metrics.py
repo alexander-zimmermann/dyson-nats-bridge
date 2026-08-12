@@ -27,6 +27,7 @@ class Metrics:
         self.dyson_connected = Gauge(
             "dyson_connected",
             "1 if the device MQTT connection is currently up, 0 otherwise",
+            ["device"],
             registry=self.registry,
         )
         self.nats_connected = Gauge(
@@ -37,41 +38,43 @@ class Metrics:
         self.messages_received = Counter(
             "dyson_messages_received_total",
             "Messages received from the device by kind (state | environment)",
-            ["kind"],
+            ["device", "kind"],
             registry=self.registry,
         )
         self.messages_published = Counter(
             "dyson_messages_published_total",
             "Normalized messages successfully published to NATS by kind",
-            ["kind"],
+            ["device", "kind"],
             registry=self.registry,
         )
         self.publish_errors = Counter(
             "dyson_publish_errors_total",
             "Publish errors by reason",
-            ["reason"],
+            ["device", "reason"],
             registry=self.registry,
         )
         self.commands = Counter(
             "dyson_commands_total",
             "Commands received on NATS by function and outcome (ok | invalid | error)",
-            ["function", "outcome"],
+            ["device", "function", "outcome"],
             registry=self.registry,
         )
         self.poll_errors = Counter(
             "dyson_poll_errors_total",
             "Failed state/environment poll requests to the device",
+            ["device"],
             registry=self.registry,
         )
         self.reconnects = Counter(
             "dyson_reconnects_total",
             "Device MQTT reconnect attempts by outcome (ok | error)",
-            ["outcome"],
+            ["device", "outcome"],
             registry=self.registry,
         )
         self.last_message_ts = Gauge(
             "dyson_last_message_received_timestamp",
             "Unix timestamp of the last message received from the device (seconds)",
+            ["device"],
             registry=self.registry,
         )
         # Surface logger-health state so a stuck stdout is visible in Prometheus,

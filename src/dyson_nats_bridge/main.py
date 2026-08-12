@@ -34,24 +34,27 @@ def logger_watchdog_ok(now: float) -> bool:
 
 
 async def _amain() -> int:
-    # Required fields (host, serial, device name) are populated from env vars
-    # by pydantic-settings; mypy can't see that through __init__.
-    settings = Settings()  # type: ignore[call-arg]
+    settings = Settings()
     configure_logging(settings.log_level, settings.log_format)
     logger.info("dyson-nats-bridge starting")
-    logger.info(
-        "config: device=%s host=%s type=%s state_subject=%s poll=%.0fs",
-        settings.dyson_device_name,
-        settings.dyson_host,
-        settings.dyson_product_type,
-        settings.state_subject,
-        settings.poll_interval,
-    )
+
+    devices = settings.load_devices()
+    logger.info("config: %d device(s), poll=%.0fs", len(devices), settings.poll_interval)
+    for device in devices:
+        logger.info(
+            "config: device=%s host=%s type=%s state_subject=%s",
+            device.name,
+            device.host,
+            device.product_type,
+            device.state_subject,
+        )
 
     metrics = Metrics()
     publisher = Publisher(settings, metrics)
-    bridge = DysonBridge(settings, publisher, metrics)
-    commands = CommandHandler(settings, bridge, publisher, metrics)
+    # Constructing a bridge reads its credential file; a missing or empty one is
+    # a configuration error and should fail startup rather than run degraded.
+    bridges = {d.name: DysonBridge(settings, d, publisher, metrics) for d in devices}
+    commands = CommandHandler(settings, bridges, publisher, metrics)
 
     def is_healthy() -> bool:
         # Device connectivity is deliberately NOT part of liveness: an unplugged
@@ -69,19 +72,21 @@ async def _amain() -> int:
 
     try:
         await publisher.connect()
-        await bridge.start()
+        for bridge in bridges.values():
+            await bridge.start()
         await commands.start()
-        logger.info("bridge is up")
+        logger.info("bridge is up (%d device(s))", len(bridges))
         await stop_event.wait()
     except Exception:
         logger.exception("fatal error in bridge startup/run")
         return 1
     finally:
         logger.info("shutting down")
-        try:
-            await bridge.stop()
-        except Exception:
-            logger.exception("error stopping device bridge")
+        for name, bridge in bridges.items():
+            try:
+                await bridge.stop()
+            except Exception:
+                logger.exception("[%s] error stopping device bridge", name)
         try:
             await publisher.close()
         except Exception:

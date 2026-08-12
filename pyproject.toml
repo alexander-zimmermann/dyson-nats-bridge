@@ -1,7 +1,7 @@
 [project]
 name = "dyson-nats-bridge"
-version = "0.3.0"
-description = "Bridge a Dyson purifier fan (on-device MQTT broker) to NATS JetStream"
+version = "0.4.0"
+description = "Bridge Dyson purifier fans (on-device MQTT broker) to NATS JetStream"
 readme = "README.md"
 license = "GPL-2.0-or-later"
 requires-python = ">=3.14.7"
@@ -21,6 +21,7 @@ dependencies = [
     "prometheus-client>=0.26.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
+    "pyyaml>=6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +32,7 @@ dev = [
     "ruff>=0.16.2",
     "mypy>=2.3.0",
     "pre-commit>=4.6.2",
+    "types-PyYAML",
 ]
 
 [project.scripts]

@@ -1,35 +1,96 @@
-"""Unit tests for Settings validation and derived subjects."""
+"""Unit tests for Settings validation, device loading, and derived subjects."""
 
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from dyson_nats_bridge.config import Settings
+from dyson_nats_bridge.config import DeviceConfig, Settings
 
 
 def _settings(**overrides: object) -> Settings:
-    defaults: dict[str, object] = {
-        "dyson_host": "fan.local",
-        "dyson_serial": "XX1-EU-ABC1234A",
-        "dyson_device_name": "testraum",
-    }
-    defaults.update(overrides)
-    return Settings(**defaults)  # type: ignore[arg-type]
+    return Settings(**overrides)  # type: ignore[arg-type]
+
+
+def _devices_file(tmp_path: Path, body: str, name: str = "devices.yaml") -> Path:
+    path = tmp_path / name
+    path.write_text(textwrap.dedent(body))
+    return path
 
 
 def test_subjects_derive_from_device_name() -> None:
-    s = _settings()
-    assert s.state_subject == "dyson.testraum.state"
-    assert s.environment_subject == "dyson.testraum.environment"
-    assert s.command_subject_filter == "dyson.testraum.command.>"
+    device = DeviceConfig(name="testraum", host="fan.local", serial="XX1-EU-ABC1234A")
+    assert device.state_subject == "dyson.testraum.state"
+    assert device.environment_subject == "dyson.testraum.environment"
+
+
+def test_command_filter_is_wildcard_across_devices() -> None:
+    assert _settings().command_subject_filter == "dyson.*.command.>"
 
 
 def test_device_name_must_be_single_token() -> None:
     with pytest.raises(ValidationError):
-        _settings(dyson_device_name="schlafzimmer.eltern")
+        DeviceConfig(name="schlafzimmer.eltern", host="fan.local", serial="XX1")
+
+
+def test_device_rejects_unknown_keys() -> None:
+    with pytest.raises(ValidationError):
+        DeviceConfig(name="x", host="fan.local", serial="XX1", typo="oops")  # type: ignore[call-arg]
+
+
+def test_load_devices_stamps_subject_prefix(tmp_path: Path) -> None:
+    path = _devices_file(
+        tmp_path,
+        """
+        devices:
+          - name: ventilator-1
+            host: fan-1.local
+            serial: XX1-EU-ABC1234A
+          - name: ventilator-2
+            host: fan-2.local
+            serial: XX2-EU-ABC1234A
+            product_type: "438E"
+        """,
+    )
+    devices = _settings(dyson_devices_file=path, nats_subject_prefix="luft").load_devices()
+
+    assert [d.name for d in devices] == ["ventilator-1", "ventilator-2"]
+    assert devices[0].product_type == "438M"  # default
+    assert devices[1].product_type == "438E"
+    assert devices[0].state_subject == "luft.ventilator-1.state"
+
+
+def test_load_devices_rejects_duplicate_names(tmp_path: Path) -> None:
+    path = _devices_file(
+        tmp_path,
+        """
+        devices:
+          - {name: same, host: a.local, serial: A}
+          - {name: same, host: b.local, serial: B}
+        """,
+    )
+    with pytest.raises(RuntimeError, match="duplicate device names"):
+        _settings(dyson_devices_file=path).load_devices()
+
+
+def test_load_devices_rejects_empty_and_malformed(tmp_path: Path) -> None:
+    empty = _devices_file(tmp_path, "devices: []\n", name="empty.yaml")
+    with pytest.raises(RuntimeError, match="declares no devices"):
+        _settings(dyson_devices_file=empty).load_devices()
+
+    malformed = _devices_file(tmp_path, "fans:\n  - name: x\n", name="malformed.yaml")
+    with pytest.raises(RuntimeError, match="top-level 'devices' list"):
+        _settings(dyson_devices_file=malformed).load_devices()
+
+    not_a_mapping = _devices_file(tmp_path, "devices:\n  - ventilator-1\n", name="scalar.yaml")
+    with pytest.raises(RuntimeError, match="must be a mapping"):
+        _settings(dyson_devices_file=not_a_mapping).load_devices()
+
+    with pytest.raises(RuntimeError, match="does not exist"):
+        _settings(dyson_devices_file=tmp_path / "missing.yaml").load_devices()
 
 
 def test_poll_interval_must_be_positive() -> None:
@@ -37,18 +98,16 @@ def test_poll_interval_must_be_positive() -> None:
         _settings(poll_interval=0)
 
 
-def test_read_dyson_credential(tmp_path: Path) -> None:
-    cred = tmp_path / "credential"
-    cred.write_text("s3cret\n")
-    assert _settings(dyson_credential_file=cred).read_dyson_credential() == "s3cret"
+def test_read_device_credential(tmp_path: Path) -> None:
+    (tmp_path / "ventilator-1").write_text("s3cret\n")
+    (tmp_path / "empty-one").write_text("")
+    settings = _settings(dyson_credentials_dir=tmp_path)
 
+    assert settings.read_device_credential("ventilator-1") == "s3cret"
     with pytest.raises(RuntimeError, match="does not exist"):
-        _settings(dyson_credential_file=tmp_path / "missing").read_dyson_credential()
-
-    empty = tmp_path / "empty"
-    empty.write_text("")
+        settings.read_device_credential("missing-one")
     with pytest.raises(RuntimeError, match="is empty"):
-        _settings(dyson_credential_file=empty).read_dyson_credential()
+        settings.read_device_credential("empty-one")
 
 
 def test_nats_auth_precedence(tmp_path: Path) -> None:
@@ -59,9 +118,10 @@ def test_nats_auth_precedence(tmp_path: Path) -> None:
 
     assert _settings().nats_auth_kwargs() == {}
     assert _settings(nats_nkey_seed_file=seed).nats_auth_kwargs() == {"nkeys_seed": str(seed)}
-    assert _settings(
-        nats_user="dyson", nats_user_password_file=password
-    ).nats_auth_kwargs() == {"user": "dyson", "password": "pw"}
+    assert _settings(nats_user="dyson", nats_user_password_file=password).nats_auth_kwargs() == {
+        "user": "dyson",
+        "password": "pw",
+    }
     # nkey seed wins over user/password.
     assert _settings(
         nats_nkey_seed_file=seed, nats_user="dyson", nats_user_password_file=password
