@@ -71,14 +71,18 @@ class FakeMsg:
 
 
 class FakeBridge:
-    def __init__(self, fail: bool = False) -> None:
+    def __init__(self, fail: bool = False, locked: bool = False) -> None:
         self.fail = fail
+        self.locked = locked
         self.applied: list[tuple[str, Any]] = []
 
     def apply_command(self, function: str, value: Any) -> None:
         if self.fail:
             raise RuntimeError("device offline")
         self.applied.append((function, value))
+
+    def set_lock(self, locked: bool) -> None:
+        self.locked = locked
 
 
 def _handler(
@@ -136,6 +140,27 @@ async def test_handler_counts_malformed_subject() -> None:
     await handler._on_command(FakeMsg("dyson.testraum.power", _payload(True)))  # type: ignore[arg-type]
 
     assert _counter_value(metrics, "unknown", "unknown", "invalid") == 1
+
+
+async def test_lock_blocks_other_commands_but_not_unlocking() -> None:
+    metrics = Metrics()
+    handler, bridges = _handler(metrics, testraum=FakeBridge())
+    bridge = bridges["testraum"]
+
+    await handler._on_command(FakeMsg("dyson.testraum.command.lock", _payload(True)))  # type: ignore[arg-type]
+    assert bridge.locked is True
+
+    # Swallowed while locked, and counted as such rather than as an error.
+    await handler._on_command(FakeMsg("dyson.testraum.command.speed", _payload(7)))  # type: ignore[arg-type]
+    assert bridge.applied == []
+    assert _counter_value(metrics, "testraum", "speed", "locked") == 1
+
+    # Unlocking must always get through, otherwise the device stays stuck.
+    await handler._on_command(FakeMsg("dyson.testraum.command.lock", _payload(False)))  # type: ignore[arg-type]
+    assert bridge.locked is False
+
+    await handler._on_command(FakeMsg("dyson.testraum.command.speed", _payload(7)))  # type: ignore[arg-type]
+    assert bridge.applied == [("speed", 7)]
 
 
 async def test_handler_counts_device_errors() -> None:

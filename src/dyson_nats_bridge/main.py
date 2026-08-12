@@ -73,6 +73,8 @@ async def _amain() -> int:
     try:
         await publisher.connect()
         for bridge in bridges.values():
+            # Before start(), so a locked device can't be driven by an early command.
+            await bridge.restore_lock()
             await bridge.start()
         await commands.start()
         logger.info("bridge is up (%d device(s))", len(bridges))

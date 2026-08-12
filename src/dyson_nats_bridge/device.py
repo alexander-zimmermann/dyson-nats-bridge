@@ -35,7 +35,11 @@ _RECONNECT_BACKOFF_MAX_SECONDS = 300.0
 # emits at most a handful of messages per second.
 _MESSAGE_QUEUE_MAX = 100
 
-COMMAND_FUNCTIONS = ("power", "speed", "oscillation", "night")
+# `lock` is not a device capability — the fan has no such concept. It is a
+# bridge-side flag that makes the other four commands no-ops, so a KNX/Basalte
+# lock can hold the device at its current setting.
+COMMAND_FUNCTIONS = ("power", "speed", "oscillation", "night", "lock")
+LOCKABLE_FUNCTIONS = tuple(f for f in COMMAND_FUNCTIONS if f != "lock")
 
 
 class DysonBridge:
@@ -59,6 +63,7 @@ class DysonBridge:
         self._supervisor_task: asyncio.Task[None] | None = None
         self._pump_task: asyncio.Task[None] | None = None
         self._stopping = False
+        self._locked = False
 
     def _build_device(self) -> DysonFanDevice:
         device = get_device(
@@ -84,6 +89,27 @@ class DysonBridge:
     @property
     def is_connected(self) -> bool:
         return bool(self._device.is_connected)
+
+    @property
+    def locked(self) -> bool:
+        return self._locked
+
+    async def restore_lock(self) -> None:
+        """Re-read the lock flag from the last archived state message.
+
+        The flag only ever arrives over NATS, so without this a pod restart
+        would silently unlock the device while the status GA still reads true.
+        """
+        last = await self._publisher.last_message(self._config.state_subject)
+        if last is not None and isinstance(last.get("locked"), bool):
+            self._locked = last["locked"]
+            if self._locked:
+                logger.info("[%s] restored lock from last state message", self._name)
+
+    def set_lock(self, locked: bool) -> None:
+        """Set the lock and publish state immediately, so the status GA follows at once."""
+        self._locked = locked
+        self._publish_state()
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -126,10 +152,7 @@ class DysonBridge:
                 self._metrics.last_message_ts.labels(device=self._name).set(time.time())
                 if message_type is MessageType.STATE:
                     kind, subject = "state", self._config.state_subject
-                    payload = normalize_state(self._device)
-                    mode = oscillation_mode(self._raw_status("oson"), self._raw_status("ancp"))
-                    if mode is not None:
-                        payload["oscillation_mode"] = mode
+                    payload = self._state_payload()
                 elif message_type is MessageType.ENVIRONMENTAL:
                     kind, subject = "environment", self._config.environment_subject
                     payload = normalize_environment(self._device)
@@ -141,6 +164,21 @@ class DysonBridge:
                     self._publisher.enqueue(self._name, kind, subject, payload)
             except Exception:
                 logger.exception("[%s] error handling device message %s", self._name, message_type)
+
+    def _state_payload(self) -> dict[str, Any]:
+        payload = normalize_state(self._device)
+        mode = oscillation_mode(self._raw_status("oson"), self._raw_status("ancp"))
+        if mode is not None:
+            payload["oscillation_mode"] = mode
+        # Always present, so the status GA has a value to seed from on restart.
+        payload["locked"] = self._locked
+        return payload
+
+    def _publish_state(self) -> None:
+        """Publish current state; event-loop only (enqueue is not thread-safe)."""
+        self._publisher.enqueue(
+            self._name, "state", self._config.state_subject, self._state_payload()
+        )
 
     def _raw_status(self, field: str) -> str | None:
         """Read one raw status field; handles STATE-CHANGE [old, new] pairs."""
