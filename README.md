@@ -35,6 +35,9 @@ Design notes:
 - `power` is the commanded state (`fpwr`), `fan_running` whether the fan is
   actually turning (`fnst`). They differ in auto mode: with clean air the
   device stays on while the fan idles.
+- `filter_life` is also exposed as the Prometheus gauge
+  `dyson_filter_life_percent{device=…}`, so a filter running out can page —
+  it is the one value here that moves slowly and needs acting on.
 - `filter_life` is the HEPA filter's remaining life in percent (`hflr`).
   Models with a separate carbon filter also report `cflr`; a combined-filter
   device reports `INV` there, and the field is then simply absent.

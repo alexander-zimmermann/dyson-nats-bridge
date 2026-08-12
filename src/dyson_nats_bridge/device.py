@@ -172,6 +172,8 @@ class DysonBridge:
             payload["oscillation_mode"] = mode
         # Always present, so the status GA has a value to seed from on restart.
         payload["locked"] = self._locked
+        if "filter_life" in payload:
+            self._metrics.filter_life.labels(device=self._name).set(payload["filter_life"])
         return payload
 
     def _publish_state(self) -> None:
