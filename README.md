@@ -22,10 +22,10 @@ Design notes:
   (`dyson.*.command.>`) routed by the device token in the subject. Every
   device-scoped metric carries a `device` label.
 
-- All Dyson quirks are resolved here so downstream consumers (e.g.
-  knx-nats-bridge writer rules) only see named scalars: `ON`/`OFF` become
-  booleans, fan speed `AUTO` becomes `speed: 0` (0 = auto, 1-10 = manual),
-  Kelvin becomes °C, and sleeping/failed sensors drop their field.
+- All Dyson quirks are resolved here so downstream consumers only see named
+  scalars: `ON`/`OFF` become booleans, fan speed `AUTO` becomes `speed: 0`
+  (0 = auto, 1-10 = manual), Kelvin becomes °C, and sleeping or failed sensors
+  drop their field rather than publishing a sentinel.
 - Oscillation is a mode enum mirroring the app's angle presets:
   `oscillation_mode` 0 = off, 1/2/3/4 = 45/90/180/350 degrees (the device's
   numeric `ancp` width on newer models). The `.command.oscillation` value
@@ -43,7 +43,7 @@ Design notes:
   device reports `INV` there, and the field is then simply absent.
 - `command.lock` is not a device capability; the fan has no such concept. It is
   a bridge-side flag (`true` = locked) that makes the other four commands
-  no-ops, so a KNX/Basalte lock can hold a device at its current setting.
+  no-ops, so an upstream controller can hold a device at its current setting.
   Unlocking always gets through, a swallowed command produces no status write
   (`state.locked` reflects the lock itself, not each command it swallows), and
   the flag is restored from the last archived state message on startup so a
@@ -65,8 +65,8 @@ serial, so a device can be swapped without breaking consumers.
 
 ```yaml
 devices:
-  - name: ventilator-1
-    host: ventilator-1.example.com
+  - name: bedroom
+    host: purifier-bedroom.example.com
     serial: XX1-EU-ABC1234A
     product_type: "438M" # optional, defaults to 438M
 ```
