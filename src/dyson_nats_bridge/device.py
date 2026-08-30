@@ -15,6 +15,7 @@ from typing import Any
 
 from libdyson import MessageType, get_device
 from libdyson.dyson_device import DysonFanDevice
+from nats_bridge_core import Publisher
 
 from .config import DeviceConfig, Settings
 from .metrics import Metrics
@@ -24,7 +25,6 @@ from .normalize import (
     normalize_state,
     oscillation_mode,
 )
-from .publisher import Publisher
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ class DysonBridge:
 
                 self._metrics.messages_received.labels(device=self._name, kind=kind).inc()
                 if payload:
-                    self._publisher.enqueue(self._name, kind, subject, payload)
+                    self._publisher.enqueue((self._name, kind), subject, payload)
             except Exception:
                 logger.exception("[%s] error handling device message %s", self._name, message_type)
 
@@ -179,7 +179,7 @@ class DysonBridge:
     def _publish_state(self) -> None:
         """Publish current state; event-loop only (enqueue is not thread-safe)."""
         self._publisher.enqueue(
-            self._name, "state", self._config.state_subject, self._state_payload()
+            (self._name, "state"), self._config.state_subject, self._state_payload()
         )
 
     def _raw_status(self, field: str) -> str | None:

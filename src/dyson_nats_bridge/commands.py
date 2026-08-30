@@ -8,11 +8,11 @@ import logging
 from typing import Any
 
 from nats.aio.msg import Msg
+from nats_bridge_core import Publisher
 
 from .config import Settings
 from .device import COMMAND_FUNCTIONS, DysonBridge
 from .metrics import Metrics
-from .publisher import Publisher
 
 logger = logging.getLogger(__name__)
 
