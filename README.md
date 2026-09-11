@@ -98,6 +98,8 @@ This prints serial, product type, and the decrypted local credential, and
 | `NATS_NKEY_SEED_FILE`   | —                                     | NKey seed (or creds file / user+password file) |
 | `NATS_STREAM_NAME`      | `DYSON`                               | JetStream stream expected to cover `dyson.>`   |
 | `METRICS_PORT`          | `9090`                                | `/metrics` + `/healthz`                        |
+| `TRACING_ENDPOINT` | unset | OTLP/HTTP collector base URL (`http://host:4318`); unset keeps tracing off |
+| `TRACING_SAMPLING_RATIO` | `0.1` | root sampling ratio; keep it equal to the connect tracer |
 
 ## Development
 
