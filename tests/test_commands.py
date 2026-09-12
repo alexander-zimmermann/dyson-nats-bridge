@@ -6,6 +6,8 @@ import json
 from typing import Any
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import Span
 
 from dyson_nats_bridge.commands import CommandHandler, parse_command, split_subject
 from dyson_nats_bridge.config import Settings
@@ -170,3 +172,16 @@ async def test_handler_counts_device_errors() -> None:
     await handler._on_command(FakeMsg("dyson.testraum.command.power", _payload(True)))  # type: ignore[arg-type]
 
     assert _counter_value(metrics, "testraum", "power", "error") == 1
+
+
+@pytest.mark.asyncio
+async def test_command_outcome_lands_on_the_active_span() -> None:
+    handler, _ = _handler(Metrics(), testraum=FakeBridge())
+
+    with trace.get_tracer("test").start_as_current_span("process") as span:
+        await handler._on_command(FakeMsg("dyson.testraum.command.speed", _payload(7)))  # type: ignore[arg-type]
+
+    assert isinstance(span, Span) and span.attributes is not None
+    assert span.attributes["command.device"] == "testraum"
+    assert span.attributes["command.function"] == "speed"
+    assert span.attributes["command.outcome"] == "ok"
