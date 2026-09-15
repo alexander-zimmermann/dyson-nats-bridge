@@ -23,6 +23,9 @@ class DeviceConfig(BaseModel):
     product_type: str = "438M"
     # Stamped by Settings.load_devices() so subject construction stays local.
     subject_prefix: str = "dyson"
+    # Group-address name prefix lares binds this device to; read by the lares
+    # mapping generator, never by the bridge.
+    ga_name: str = ""
 
     @field_validator("name", "subject_prefix")
     @classmethod

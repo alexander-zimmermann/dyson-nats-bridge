@@ -82,8 +82,11 @@ devices:
     host: purifier-bedroom.example.com
     serial: XX1-EU-ABC1234A
     product_type: "438M" # optional, defaults to 438M
+    ga_name: Raumklima.OG.Schlafzimmer.Luftreiniger # optional, read by lares only
 ```
 
+`ga_name` is the group-address name prefix lares binds the device to (see
+[KNX descriptor](#knx-descriptor)); the bridge accepts it and ignores it.
 Duplicate names, an empty list, and unknown keys are rejected at startup.
 
 ## One-time credential bootstrap
