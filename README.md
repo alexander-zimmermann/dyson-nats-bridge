@@ -56,6 +56,19 @@ Design notes:
   file, on the other hand, fails startup — that is misconfiguration, not an
   operational condition.
 
+## KNX descriptor
+
+`knx.yaml` at the package root declares which fields of `state` and
+`environment` are meant for the bus, under which datapoint name, with which DPT
+and writer behaviour — the format `nats-bridge-core` defines. lares binds each
+purifier to its group-address name prefix and generates the writer rules from
+both; the descriptor itself knows no devices and no addresses. `speed` and
+`oscillation_mode` carry the enums described above on DPT 5.010. A test pushes
+one `STATE` and one `ENVIRONMENTAL` message through the bridge and fails on any
+subject or field the published payloads do not carry — `locked` and
+`oscillation_mode` are added by the bridge itself, not by the normalizer, so
+the test reads what leaves the process.
+
 ## Devices
 
 Non-secret device details live in a YAML file (`DYSON_DEVICES_FILE`), one local

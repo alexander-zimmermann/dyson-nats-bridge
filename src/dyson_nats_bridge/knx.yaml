@@ -1,0 +1,57 @@
+# KNX descriptor (schema: nats-bridge-core knx-descriptor.schema.json).
+# Per published field the datapoint name on the bus, the DPT this bridge serves
+# and the writer behaviour. Product family only: which purifiers exist and
+# which group addresses they get is bound in lares.
+subjects:
+  state:
+    fields:
+      locked:
+        datapoint: Sperren-Status
+        dpt: "1.011"
+        seed_on_start: true
+        min_delta: 0
+      power:
+        datapoint: Ein/Aus-Status
+        dpt: "1.011"
+        seed_on_start: true
+        min_delta: 0
+      # speed 0 = Automatik; oscillation_mode 0=Aus 1=45° 2=90° 3=180° 4=350° (see normalize.py)
+      speed:
+        datapoint: Lüfterstufe-Status
+        dpt: "5.010"
+        seed_on_start: true
+        min_delta: 0
+      oscillation_mode:
+        datapoint: Drehmodus-Status
+        dpt: "5.010"
+        seed_on_start: true
+        min_delta: 0
+      night:
+        datapoint: Nachtmodus-Status
+        dpt: "1.011"
+        seed_on_start: true
+        min_delta: 0
+      # power is the commanded state, fan_running whether the fan actually turns
+      fan_running:
+        datapoint: Lüfter-Läuft-Status
+        dpt: "1.011"
+        seed_on_start: true
+        min_delta: 0
+      filter_life:
+        datapoint: Filter-Lebensdauer
+        dpt: "5.001"
+        seed_on_start: true
+        min_delta: 1
+  environment:
+    fields:
+      # min_delta keeps the poll interval off the bus
+      pm25:
+        datapoint: Feinstaub-PM25
+        dpt: "9.030"
+        seed_on_start: true
+        min_delta: 1
+      pm10:
+        datapoint: Feinstaub-PM10
+        dpt: "9.030"
+        seed_on_start: true
+        min_delta: 1
