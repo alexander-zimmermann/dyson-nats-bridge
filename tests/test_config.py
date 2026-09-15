@@ -41,6 +41,28 @@ def test_device_rejects_unknown_keys() -> None:
         DeviceConfig(name="x", host="fan.local", serial="XX1", typo="oops")  # type: ignore[call-arg]
 
 
+def test_ga_name_binding_is_optional() -> None:
+    assert DeviceConfig(name="x", host="fan.local", serial="XX1").ga_name == ""
+
+
+def test_load_devices_carries_ga_name_binding(tmp_path: Path) -> None:
+    # lares binds the device to its group-address name prefix in this very
+    # file; the bridge has to let the key through, or the ConfigMap that
+    # carries the binding kills the pod.
+    path = _devices_file(
+        tmp_path,
+        """
+        devices:
+          - name: ventilator-1
+            host: fan-1.local
+            serial: XX1-EU-ABC1234A
+            ga_name: Raumklima.OG.Schlafzimmer-Eltern.Luftreiniger
+        """,
+    )
+    (device,) = _settings(dyson_devices_file=path).load_devices()
+    assert device.ga_name == "Raumklima.OG.Schlafzimmer-Eltern.Luftreiniger"
+
+
 def test_load_devices_stamps_subject_prefix(tmp_path: Path) -> None:
     path = _devices_file(
         tmp_path,
